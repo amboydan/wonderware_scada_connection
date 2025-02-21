@@ -1,0 +1,143 @@
+---
+title: "KGF Grind and Inject <br> Pressure & Volume History"
+output:
+  html_document:
+    df_print: paged
+---
+
+Kenai gas field has two wells that are permitted as Class 1 disposal, KU 12-17 and KU 24-7RD. Find their EPA Permit here [Permit Number AK-1I018-A](https://www.epa.gov/system/files/documents/2021-09/uic-permit-r10-ak1i018a-2021.pdf). Both wells have been starting to "pressure up" when disposing of drill well cuttings (and other oil field waste). The injection pressure limits can be found on page #14 of the EPA permit under Well Operation - Section 4 - Injection Pressure Limitation:
+
+##### **Injection Pressure Limitation**
+
+The Permittee must not inject at a pressure that initiates new fractures or propagates existing fractures in the injection zone or the upper confining zone, as described in the Fact Sheet. **The Permittee must not inject at a pressure exceeding the maximum injection pressure of 2200 psi, measured at the wellhead**, except as follows:
+
+<ol>
+
+<li>If a plant is shut-down or outage (unrelated to fluid injection activities) occurs.</li>
+
+<li>If a well stimulation is required.</li>
+
+</ol>
+
+In such instances, the **Permittee must notify the Director or an EPA authorized representative by telephone or email within 24 hours of the initial exceedance of 2200 psi** and must submit a written incident report not later than 10 calendar days thereafter. The Permittee must never inject above the working pressure for which the well components are rated.
+
+##### **Gathering the trend data**
+
+We want to know what is the average injection pressure, pump rate, and total volume of each injection cycle.
+
+A raw view of the injection cycles as they appear in 'Trend' software is shown below. ![Raw view of the Injection Pressure, Volume, Slurry Density of the G&I wells.](C:\Users\dtaylor\Documents\wonderware_kenai_ak_GandI\kgf_grind_and_inject_raw_plot.jpg)
+
+
+
+##### SCADA Tags
+<ul>
+  <li>KU 12-17</li>
+    <ul>
+      <li>Mass Flow Rate:  AK_4118_Well_KU_1217.Mass_FR</li>
+      <li>Injection Tubing Pressure:  AK_4118_Well_KU_1217.TBG_PT</li>
+    </ul>
+  <li>KU 24-07RD</li>
+  <ul>
+      <li>Mass Flow Rate:  AK_4118_Well_KU_247RD.Mass_FR</li>
+      <li>Injection Tubing Pressure:  AK_4118_Well_KU_247RD.TBG_PT</li>
+    </ul>
+</ul>
+
+
+```{r include=F}
+library(magrittr); library(dplyr); library(ggplot2)
+```
+
+Set up a group of parameters including the timeline of the data.  Take the last 1.0 years of data (525,600 minutes). We may need more data than this but this will be a good start.
+
+```{r include=T}
+params <- data.frame(
+  well_name = 'KU_12-17',
+  tag_name = "AK_4118_Well_KU_1217.Mass_FR",
+  tag_type = "BPM",
+  divisions = '10 minutes',
+  hist_string = paste0("driver={SQL Server};server=KEN353INSQL1;", 
+                      "database=Runtime;Uid=wwUser;Pwd=wwUser"),
+  start_time = as.POSIXct("2024-02-15 00:00:00 AKDT"),
+  stop_time = as.POSIXct("2025-02-15 00:00:00 AKDT")
+)
+```
+
+Function for making the query from historian.
+```{r include=T}
+# Get values of all type
+get_values <- function(params) {
+  
+  # Parameters
+  Historian = RODBC::odbcDriverConnect(params$hist_string)
+  time = round(as.numeric(params$stop_time - params$start_time), 4)
+  divisions = params$divisions
+  tag = params$tag_name
+  
+  # Calculate the number of points
+  calc_points = function(time, divisions) {
+    tm = divisions
+    div = data.frame(div=c("seconds","30 seconds", "minutes","5 minutes", "10 minutes","30 minutes",
+                          "hours","4 hours", "12 hours","days", "5 days","15 days"),
+                    #seconds and 30 seconds
+                    divby=c(0.000011574,.00034722, 
+                          #min and 5 min
+                          .00069444,.00347222,
+                          #10 min and 30 min
+                          .0069444,.0208333,
+                          #hour and 4 hours
+                          .041666,.166664,
+                          #12 hours and 1 day
+                          .5,1,
+                          #5 days and 15 days
+                          5,15))
+    div <- div %>% filter(div == tm) %>% select(divby)
+    return(round(time / div$divby, 0))
+  }
+  num_points = calc_points(time, divisions)
+  
+  # query
+  query = RODBC::sqlQuery(Historian,
+                  paste0("SELECT Well = '", params$well_name,"', Tag = '", 
+                         params$tag_type,"', ",
+                        " DateTime, Value FROM History",
+                        " WHERE TagName = '",params$tag_name,"'",
+                        " AND DateTime >= '",params$start_time,"'",
+                        " AND DateTime <= '",params$stop_time,"'",
+                        " AND wwRetrievalMode = 'Cyclic' AND wwCycleCount = ",num_points,
+                        " AND wwTimeStampRule = 'Start'"))
+  return(query)
+}
+
+```
+
+Make the query on all tags.
+
+```{r inculde=T, warnings=F, message=F}
+all_tags <- data.frame(Well= factor(), Tag=character(), Type=character()) %>%
+  add_row(Well='KU_12-17', Tag='AK_4118_Well_KU_1217.Mass_FR', Type='Mass_FR') %>%
+  add_row(Well='KU_12-17', Tag='AK_4118_Well_KU_1217.TBG_PT', Type='TP') %>%
+  add_row(Well='KU_24-07RD', Tag='AK_4118_Well_KU_247RD.Mass_FR', Type='Mass_FR') %>%
+  add_row(Well='KU_24-07RD', Tag='AK_4118_Well_KU_247RD.TBG_PT', Type='TP')
+
+# gather into list
+data_list <- list()
+for(i in 1:nrow(all_tags)) {
+  params$well_name <- all_tags[i, 'Well']
+  params$tag_name <- all_tags[i, 'Tag']
+  params$tag_type <- all_tags[i, 'Type']
+  data_list[[i]] = get_values(params)
+}
+
+data <- do.call(rbind, data_list) %>%
+  mutate(DateTime = as.POSIXct(substr(DateTime, 1, 18),
+                           '%Y-%m-%d %H:%M:%S',
+                           tz = Sys.timezone()),
+         Well = factor(Well),
+         Tag = factor(Tag)) %>%
+  tidyr::spread(Tag, Value)
+
+
+```
+
+
