@@ -1,0 +1,1 @@
+Two wells in Kenai Gas Field in Alaska are used for Class 1 injection (EPA permitted).  This Project queries the injection pressure and total volume injected and outlines what the state of the injection pressures and volumes has been over the years. 
